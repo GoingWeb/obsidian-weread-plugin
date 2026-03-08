@@ -261,6 +261,14 @@ export type BookDetailResponse = {
 		categoryType: number;
 		title: string;
 	}[];
+	copyrightInfo: {
+		id: number;
+		name: string;
+		userVid: number;
+		role: number;
+		avatar: string;
+		cpType: number;
+	};
 	hasLecture: number;
 	lastChapterIdx: number;
 	paperBook: { skuId: string };
@@ -329,6 +337,7 @@ export type Notebook = {
 export type Metadata = {
 	bookId: string;
 	author: string;
+	translator: string;
 	title: string;
 	url: string;
 	pcUrl?: string;
@@ -340,12 +349,16 @@ export type Metadata = {
 	isbn?: string;
 	category?: string;
 	publisher?: string;
+	copyright?: string;
 	intro?: string;
 	duplicate?: boolean;
 	lastReadDate: string;
 	file?: AnnotationFile;
 	totalWords?: number;
 	rating?: string;
+	price: number;
+	paid: number; // 1. 已购买; 0. 未购买
+	payingStatus: number; // 1: 体验卡可读; 2: 购买可读
 	readInfo?: {
 		markedStatus?: number;
 		readingTime: number;

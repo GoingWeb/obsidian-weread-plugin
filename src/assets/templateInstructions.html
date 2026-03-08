@@ -3,12 +3,12 @@
 <h3>功能开关</h3>
 <p><strong>✂️ 自动去空白：</strong>开启后会自动移除模板标签（{% %}）前后的换行和空格，让你可以用缩进写出更易读的模板代码。</p>
 <p><strong>📝 Markdown渲染：</strong>开启后右侧预览会渲染为格式化的 Markdown，关闭则显示原始文本。</p>
-
 <h2>可用变量</h2>
 元数据变量(metaData)
 <ul>
   <li><span class="u-pop">{{title}}</span> - 书名</li>
   <li><span class="u-pop">{{author}}</span> - 作者</li>
+  <li><span class="u-pop">{{tranlator}}</span> - 翻译者</li>
   <li><span class="u-pop">{{cover}}</span> - 封面</li>
   <li><span class="u-pop">{{intro}}</span> - 书籍简介</li>
   <li><span class="u-pop">{{bookId}}</span> - 微信图书ID </li>
@@ -18,7 +18,20 @@
   <li><span class="u-pop">{{isbn}}</span> - ISBN</li>
   <li><span class="u-pop">{{category}}</span> - 分类</li>
   <li><span class="u-pop">{{publisher}}</span> - 出版社</li>
+  <li><span class="u-pop">{{price}}</span> - 价格</li>
+  <li><span class="u-pop">{{paid}}</span> - 购买状态(1:购买)</li>
+  <li><span class="u-pop">{{payingStatus}}</span> - 可读状态(1: 体验可读, 2: 购买可读)</li>
   <li><span class="u-pop">{{readInfo}}</span> - 阅读信息, 点击查看详情</li>
+  <li><span class="u-pop">{{readInfo.readingTime}}</span> - 阅读时间(秒)</li>
+  <li><span class="u-pop">{{readInfo.totalReadDay}}</span> - 总阅读天数</li>
+  <li><span class="u-pop">{{readInfo.continueReadDays}}</span> - 连续阅读天数</li>
+  <li><span class="u-pop">{{readInfo.readingBookCount}}</span> - 当前阅读书籍数量</li>
+  <li><span class="u-pop">{{readInfo.readingBookDate}}</span> - 当前阅读书籍日期</li>
+  <li><span class="u-pop">{{readInfo.finishedDate}}</span> - 完成日期</li>
+  <li><span class="u-pop">{{readInfo.readingProgress}}</span> - 阅读进度</li>
+  <li><span class="u-pop">{{readInfo.markedStatus}}</span> - 标记状态(1: 未标记, 2: 在读, 3: 读过, 4: 读完)</li>
+  <li><span class="u-pop">{{readInfo.finishedBookCount}}</span> - 完成书籍数量</li>
+  <li><span class="u-pop">{{readInfo.finishedBookIndex}}</span> - 完成书籍索引</li>
 </ul>
 划线变量(chapterHighlights)
 <ul>
@@ -39,4 +52,11 @@
   <li><span class="u-pop">{{mdContent}}</span> - markdown笔记格式</li>
   <li><span class="u-pop">{{type}}</span> - 类型</li>
   <li><span class="u-pop">{{range}}</span> - 范围</li>
+</ul>
+过滤器('|'后面跟过滤器名称和参数)
+<ul>
+  <li><span class="u-pop"><code>replace(old,new)</code></span> - 字符串替换</li>
+  <li><span class="u-pop"><code>truncate(length)</code></span> - 字符串截断</li>
+  <li><span class="u-pop"><code>toDate(utc_timestamp)</code></span> - 将UTC时间戳转换为日期字符串,格式为YYYY-MM-DD</li>
+  <li><span class="u-pop"><code>toDuration(duration)</code></span> - 将秒数转换为时分秒格式,例如3600秒会被转换为1h0m0s</li>
 </ul>

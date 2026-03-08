@@ -36,7 +36,9 @@ export const parseMetadata = (noteBook: any): Metadata => {
 		reviewCount: noteBook['reviewCount'],
 		bookType: book['type'],
 		lastReadDate: lastReadDate,
-		pcUrl: pcUrl
+		pcUrl: pcUrl,
+		price: book['price'],
+		payingStatus: book['payingStatus']
 	};
 	return metaData;
 };

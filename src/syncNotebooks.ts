@@ -85,6 +85,10 @@ export default class SyncNotebooks {
 			metaData.intro = bookDetail.intro;
 			metaData.totalWords = bookDetail.totalWords;
 			metaData.rating = `${bookDetail.newRating / 10}%`;
+			metaData.paid = bookDetail.paid;
+			metaData.price = bookDetail.price;
+			metaData.payingStatus = bookDetail.payingStatus;
+			metaData.copyright = bookDetail.copyrightInfo.name;
 		}
 		const progress: BookProgressResponse = await this.apiManager.getProgress(metaData.bookId);
 		if (progress && progress.book) {

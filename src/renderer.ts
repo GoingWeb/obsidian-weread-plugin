@@ -2,33 +2,36 @@ import * as nunjucks from 'nunjucks';
 import type { Notebook, RenderTemplate } from './models';
 import { settingsStore } from './settings';
 import { get } from 'svelte/store';
+import { formatTimeDuration, formatTimestampToDate } from './utils/dateUtil';
 export class Renderer {
 	constructor() {
-		nunjucks
-			.configure({ autoescape: false })
-			// 自定义函数 https://mozilla.github.io/nunjucks/api.html#addfilter
-			.addFilter('replace', function (str, pattern, replacement) {
-				if (!str) return '';
+		const env = nunjucks.configure({ autoescape: false });
+		// 添加自定义过滤器
+		this.setFilter(env);
 
-				if (typeof pattern === 'string') {
-					try {
-						// 如果 pattern 以 /.../ 开头和结尾，解析为正则表达式
-						if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
-							const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
-							const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
-							pattern = new RegExp(regexBody, flags);
-						} else {
-							return str.replaceAll(pattern, replacement);
-						}
-					} catch (e) {
-						// 如果正则表达式无效，回退到字符串替换
-						return String(str).replaceAll(pattern, replacement);
-					}
-				} else if (pattern instanceof RegExp) {
-					return String(str).replace(pattern, replacement);
-				}
-				return String(str).replaceAll(pattern, replacement);
-			});
+		// // 自定义函数 https://mozilla.github.io/nunjucks/api.html#addfilter
+		// .addFilter('replace', function (str, pattern, replacement) {
+		// 	if (!str) return '';
+
+		// 	if (typeof pattern === 'string') {
+		// 		try {
+		// 			// 如果 pattern 以 /.../ 开头和结尾，解析为正则表达式
+		// 			if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
+		// 				const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
+		// 				const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
+		// 				pattern = new RegExp(regexBody, flags);
+		// 			} else {
+		// 				return str.replaceAll(pattern, replacement);
+		// 			}
+		// 		} catch (e) {
+		// 			// 如果正则表达式无效，回退到字符串替换
+		// 			return String(str).replaceAll(pattern, replacement);
+		// 		}
+		// 	} else if (pattern instanceof RegExp) {
+		// 		return String(str).replace(pattern, replacement);
+		// 	}
+		// 	return String(str).replaceAll(pattern, replacement);
+		// });
 	}
 
 	validate(template: string): boolean {
@@ -55,33 +58,13 @@ export class Renderer {
 
 		// 如果启用了 trimBlocks，使用配置的环境
 		if (trimBlocks) {
-			const env = new nunjucks.Environment(null, {
-				autoescape: false,
-				trimBlocks: true,
-				lstripBlocks: true
-			});
-
-			// 添加自定义过滤器
-			env.addFilter('replace', function (str, pattern, replacement) {
-				if (!str) return '';
-
-				if (typeof pattern === 'string') {
-					try {
-						if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
-							const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
-							const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
-							pattern = new RegExp(regexBody, flags);
-						} else {
-							return str.replaceAll(pattern, replacement);
-						}
-					} catch (e) {
-						return String(str).replaceAll(pattern, replacement);
-					}
-				} else if (pattern instanceof RegExp) {
-					return String(str).replace(pattern, replacement);
-				}
-				return String(str).replaceAll(pattern, replacement);
-			});
+			const env = this.setFilter(
+				new nunjucks.Environment(null, {
+					autoescape: false,
+					trimBlocks: true,
+					lstripBlocks: true
+				})
+			);
 
 			const content = env.renderString(template, context);
 			return content;
@@ -92,6 +75,51 @@ export class Renderer {
 		}
 	}
 
+	setFilter(env: nunjucks.Environment) {
+		// 添加自定义过滤器
+		env.addFilter('replace', function (str, pattern, replacement) {
+			if (!str) return '';
+
+			if (typeof pattern === 'string') {
+				try {
+					if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
+						const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
+						const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
+						pattern = new RegExp(regexBody, flags);
+					} else {
+						return str.replaceAll(pattern, replacement);
+					}
+				} catch (e) {
+					return String(str).replaceAll(pattern, replacement);
+				}
+			} else if (pattern instanceof RegExp) {
+				return String(str).replace(pattern, replacement);
+			}
+			return String(str).replaceAll(pattern, replacement);
+		})
+			.addFilter('split', function (str, separator) {
+				if (!str) return [];
+				if (typeof separator === 'string') {
+					return String(str).split(separator);
+				}
+				return [String(str)];
+			})
+			.addFilter('toDate', function (timestamp) {
+				if (!timestamp) return '';
+				if (typeof timestamp === 'number') {
+					return formatTimestampToDate(timestamp);
+				}
+				return '';
+			})
+			.addFilter('toDuration', function (duration) {
+				if (!duration) return '';
+				if (typeof duration === 'number') {
+					return formatTimeDuration(duration);
+				}
+				return '';
+			});
+		return env;
+	}
 	/**
 	 * Render a notebook with a custom template string (without using global settings)
 	 * @param templateStr - The template string to use for rendering
@@ -109,35 +137,37 @@ export class Renderer {
 		};
 
 		// 创建临时环境以支持 trimBlocks 配置
-		const env = new nunjucks.Environment(null, {
-			autoescape: false,
-			trimBlocks: trimBlocks,
-			lstripBlocks: trimBlocks
-		});
+		const env = this.setFilter(
+			new nunjucks.Environment(null, {
+				autoescape: false,
+				trimBlocks: trimBlocks,
+				lstripBlocks: trimBlocks
+			})
+		);
 
 		// 添加自定义过滤器
-		env.addFilter('replace', function (str, pattern, replacement) {
-			if (!str) return '';
+		// env.addFilter('replace', function (str, pattern, replacement) {
+		// 	if (!str) return '';
 
-			if (typeof pattern === 'string') {
-				try {
-					// 如果 pattern 以 /.../ 开头和结尾，解析为正则表达式
-					if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
-						const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
-						const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
-						pattern = new RegExp(regexBody, flags);
-					} else {
-						return str.replaceAll(pattern, replacement);
-					}
-				} catch (e) {
-					// 如果正则表达式无效，回退到字符串替换
-					return String(str).replaceAll(pattern, replacement);
-				}
-			} else if (pattern instanceof RegExp) {
-				return String(str).replace(pattern, replacement);
-			}
-			return String(str).replaceAll(pattern, replacement);
-		});
+		// 	if (typeof pattern === 'string') {
+		// 		try {
+		// 			// 如果 pattern 以 /.../ 开头和结尾，解析为正则表达式
+		// 			if (pattern.startsWith('/') && pattern.lastIndexOf('/') > 0) {
+		// 				const regexBody = pattern.slice(1, pattern.lastIndexOf('/'));
+		// 				const flags = pattern.slice(pattern.lastIndexOf('/') + 1);
+		// 				pattern = new RegExp(regexBody, flags);
+		// 			} else {
+		// 				return str.replaceAll(pattern, replacement);
+		// 			}
+		// 		} catch (e) {
+		// 			// 如果正则表达式无效，回退到字符串替换
+		// 			return String(str).replaceAll(pattern, replacement);
+		// 		}
+		// 	} else if (pattern instanceof RegExp) {
+		// 		return String(str).replace(pattern, replacement);
+		// 	}
+		// 	return String(str).replaceAll(pattern, replacement);
+		// });
 
 		const content = env.renderString(templateStr, context);
 		return content;
