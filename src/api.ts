@@ -12,19 +12,6 @@ import {
 	BookProgressResponse
 } from './models';
 import CookieCloudManager from './cookieCloud';
-
-type RequestOptions<T> = {
-	action: string;
-	errorNotice?: string;
-	fallback: T;
-	clearCookiesOnAuthFailure?: boolean;
-	authFailureNotice?: {
-		desktop: string;
-		mobile: string;
-	};
-	retryOnTimeout?: boolean;
-};
-
 export default class ApiManager {
 	readonly baseUrl: string = 'https://weread.qq.com';
 
@@ -38,71 +25,6 @@ export default class ApiManager {
 			'Content-Type': 'application/json',
 			Cookie: getCookieString(get(settingsStore).cookies)
 		};
-	}
-
-	private getResponseCookie(headers: Record<string, string>): string | undefined {
-		return headers['set-cookie'] || headers['Set-Cookie'];
-	}
-
-	private isLoginTimeoutError(respJson: any): boolean {
-		if (!respJson || typeof respJson !== 'object') {
-			return false;
-		}
-		return respJson.errcode === -2012 || respJson.errCode === -2012;
-	}
-
-	private async requestJson<T>(
-		req: RequestUrlParam,
-		options: RequestOptions<T>,
-		allowRetry = true
-	): Promise<T> {
-		try {
-			const resp = await requestUrl(req);
-			const respJson = resp.json;
-
-			// CookieCloud 的 cookie 可能缺少关键字段，这里统一尝试用 set-cookie 补齐。
-			const respCookie = this.getResponseCookie(resp.headers);
-			if (respCookie !== undefined) {
-				this.updateCookies(respCookie);
-			}
-
-			if (this.isLoginTimeoutError(respJson)) {
-				console.log('weread cookie expire retry refresh cookie... ');
-				if (options.retryOnTimeout !== false && allowRetry) {
-					await this.refreshCookie();
-					return this.requestJson(req, options, false);
-				}
-			}
-
-			if (resp.status === 401) {
-				if (options.authFailureNotice) {
-					new Notice(
-						Platform.isDesktopApp
-							? options.authFailureNotice.desktop
-							: options.authFailureNotice.mobile
-					);
-				}
-				if (options.clearCookiesOnAuthFailure) {
-					settingsStore.actions.clearCookies();
-				}
-				console.log(`[weread plugin] ${options.action} unauthorized`, respJson);
-				return options.fallback;
-			}
-
-			return respJson as T;
-		} catch (e: any) {
-			if (e?.status === 401 && allowRetry) {
-				console.log(`parse request to cURL for debug: ${this.parseToCurl(req)}`);
-				await this.refreshCookie();
-				return this.requestJson(req, options, false);
-			}
-
-			if (options.errorNotice) {
-				new Notice(options.errorNotice);
-			}
-			console.error(`[weread plugin] ${options.action} error`, e);
-			return options.fallback;
-		}
 	}
 
 	async refreshCookie() {
@@ -146,23 +68,54 @@ export default class ApiManager {
 	}
 
 	async getNotebooks() {
+		let noteBooks = [];
 		const req: RequestUrlParam = {
 			url: `${this.baseUrl}/api/user/notebook`,
 			method: 'GET',
 			headers: this.getHeaders()
 		};
 
-		const resp = await this.requestJson<{ books?: [] }>(req, {
-			action: 'get notebooks',
-			fallback: { books: [] },
-			clearCookiesOnAuthFailure: true,
-			authFailureNotice: {
-				desktop: '微信读书未登录或者用户异常，请在设置中重新登录！',
-				mobile: '微信读书未登录或者用户异常，请在电脑端重新登录！'
+		try {
+			const resp = await requestUrl(req);
+			if (resp.status === 401) {
+				if (resp.json.errcode == -2012) {
+					// 登录超时 -2012
+					console.log('weread cookie expire retry refresh cookie... ');
+					await this.refreshCookie();
+				} else {
+					if (Platform.isDesktopApp) {
+						new Notice('微信读书未登录或者用户异常，请在设置中重新登录！');
+					} else {
+						new Notice('微信读书未登录或者用户异常，请在电脑端重新登录！');
+					}
+					console.log(
+						'微信读书未登录或者用户异常，请重新登录, http status code:',
+						resp.json.errcode
+					);
+					settingsStore.actions.clearCookies();
+				}
+			} else {
+				if (resp.json.errcode == -2012) {
+					console.log('weread cookie expire retry refresh cookie... ');
+					await this.refreshCookie();
+				}
 			}
-		});
 
-		return resp.books || [];
+			// CookieCloud 请求到的 cookie 时间过长时，需要获取 set-cookie 更新 wr_skey，否则请求 /web 的接口会返回登录超时
+			const respCookie: string = resp.headers['set-cookie'] || resp.headers['Set-Cookie'];
+			if (respCookie !== undefined) {
+				this.updateCookies(respCookie);
+			}
+
+			noteBooks = resp.json.books;
+		} catch (e) {
+			if (e.status == 401) {
+				console.log(`parse request to cURL for debug: ${this.parseToCurl(req)}`);
+				await this.refreshCookie();
+			}
+		}
+
+		return noteBooks;
 	}
 
 	private parseToCurl(req: RequestUrlParam) {
@@ -209,61 +162,74 @@ export default class ApiManager {
 	}
 
 	async getBook(bookId: string): Promise<BookDetailResponse> {
-		const req: RequestUrlParam = {
-			url: `${this.baseUrl}/web/book/info?bookId=${bookId}`,
-			method: 'GET',
-			headers: this.getHeaders()
-		};
-		return this.requestJson<BookDetailResponse>(req, {
-			action: `get book detail ${bookId}`,
-			fallback: null,
-			errorNotice: '获取书籍详情失败，请检查您的 Cookies 并重试。'
-		});
+		try {
+			const req: RequestUrlParam = {
+				url: `${this.baseUrl}/web/book/info?bookId=${bookId}`,
+				method: 'GET',
+				headers: this.getHeaders()
+			};
+			const resp = await requestUrl(req);
+			if (resp.json.errCode == -2012) {
+				// 登录超时 -2012
+				console.log('weread cookie expire retry refresh cookie... ');
+				await this.refreshCookie();
+			}
+			return resp.json;
+		} catch (e) {
+			console.error('get book detail error', e);
+		}
 	}
 
 	async getNotebookHighlights(bookId: string): Promise<HighlightResponse> {
-		const req: RequestUrlParam = {
-			url: `${this.baseUrl}/web/book/bookmarklist?bookId=${bookId}`,
-			method: 'GET',
-			headers: this.getHeaders()
-		};
-		return this.requestJson<HighlightResponse>(req, {
-			action: `get book highlights ${bookId}`,
-			fallback: { updated: [], chapters: [] } as HighlightResponse,
-			errorNotice: '获取划线数据失败，请检查您的 Cookies 并重试。'
-		});
+		try {
+			const req: RequestUrlParam = {
+				url: `${this.baseUrl}/web/book/bookmarklist?bookId=${bookId}`,
+				method: 'GET',
+				headers: this.getHeaders()
+			};
+			const resp = await requestUrl(req);
+			return resp.json;
+		} catch (e) {
+			console.error('get book highlight error' + bookId, e);
+		}
 	}
 
 	async getNotebookReviews(bookId: string): Promise<BookReviewResponse> {
-		const url = `${this.baseUrl}/web/review/list?bookId=${bookId}&listType=11&mine=1&synckey=0`;
-		const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
-		return this.requestJson<BookReviewResponse>(req, {
-			action: `get notebook reviews ${bookId}`,
-			fallback: { reviews: [] } as BookReviewResponse,
-			errorNotice:
+		try {
+			const url = `${this.baseUrl}/web/review/list?bookId=${bookId}&listType=11&mine=1&synckey=0`;
+			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
+			const resp = await requestUrl(req);
+			return resp.json;
+		} catch (e) {
+			new Notice(
 				'Failed to fetch weread notebook reviews . Please check your Cookies and try again.'
-		});
+			);
+			console.error('get book review error' + bookId, e);
+		}
 	}
 
 	async getChapters(bookId: string): Promise<ChapterResponse> {
-		const url = `${this.baseUrl}/web/book/chapterInfos`;
-		const reqBody = {
-			bookIds: [bookId]
-		};
+		try {
+			const url = `${this.baseUrl}/web/book/chapterInfos`;
+			const reqBody = {
+				bookIds: [bookId]
+			};
 
-		const req: RequestUrlParam = {
-			url: url,
-			method: 'POST',
-			headers: this.getHeaders(),
-			body: JSON.stringify(reqBody)
-		};
+			const req: RequestUrlParam = {
+				url: url,
+				method: 'POST',
+				headers: this.getHeaders(),
+				body: JSON.stringify(reqBody)
+			};
 
-		return this.requestJson<ChapterResponse>(req, {
-			action: `get chapters ${bookId}`,
-			fallback: { data: [] } as ChapterResponse,
-			errorNotice:
+			const resp = await requestUrl(req);
+			return resp.json;
+		} catch (e) {
+			new Notice(
 				'Failed to fetch weread notebook chapters . Please check your Cookies and try again.'
-		});
+			);
+			console.error('get book chapters error' + bookId, e);
+		}
 	}
 	/**
 	 * 获取书籍阅读进度信息
@@ -271,27 +237,32 @@ export default class ApiManager {
 	 * @returns 书籍阅读进度信息
 	 */
 	async getProgress(bookId: string): Promise<BookProgressResponse> {
-		const url = `${this.baseUrl}/web/book/getProgress?bookId=${bookId}`;
-		const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
-		return this.requestJson<BookProgressResponse>(req, {
-			action: `get progress ${bookId}`,
-			fallback: {} as BookProgressResponse,
-			errorNotice: '获取微信读书阅读进度信息失败，请检查您的 Cookies 并重试。'
-		});
+		try {
+			const url = `${this.baseUrl}/web/book/getProgress?bookId=${bookId}`;
+			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
+			const resp = await requestUrl(req);
+			return resp.json;
+		} catch (e) {
+			new Notice('获取微信读书阅读进度信息失败，请检查您的 Cookies 并重试。');
+			console.error('get book progress error for bookId: ' + bookId, e);
+		}
 	}
 
 	/**
 	 * @deprecated 该方法新 API 中已废弃，请使用 getProgress 方法代替
 	 */
 	async getBookReadInfo(bookId: string): Promise<BookReadInfoResponse> {
-		const url = `${this.baseUrl}/web/book/readinfo?bookId=${bookId}&readingDetail=1&readingBookIndex=1&finishedDate=1`;
-		const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
-		return this.requestJson<BookReadInfoResponse>(req, {
-			action: `get read info ${bookId}`,
-			fallback: {} as BookReadInfoResponse,
-			errorNotice:
+		try {
+			const url = `${this.baseUrl}/web/book/readinfo?bookId=${bookId}&readingDetail=1&readingBookIndex=1&finishedDate=1`;
+			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
+			const resp = await requestUrl(req);
+			return resp.json;
+		} catch (e) {
+			new Notice(
 				'Failed to fetch weread notebook read info . Please check your Cookies and try again.'
-		});
+			);
+			console.error('get book read info error' + bookId, e);
+		}
 	}
 
 	private checkCookies(respCookie: string): boolean {

@@ -88,7 +88,7 @@ export default class SyncNotebooks {
 			metaData.paid = bookDetail.paid;
 			metaData.price = bookDetail.price;
 			metaData.payingStatus = bookDetail.payingStatus;
-			metaData.copyright = bookDetail.copyrightInfo.name;
+			metaData.copyright = bookDetail.copyrightInfo ? bookDetail.copyrightInfo.name : '';
 		}
 		const progress: BookProgressResponse = await this.apiManager.getProgress(metaData.bookId);
 		if (progress && progress.book) {
