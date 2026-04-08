@@ -1,6 +1,6 @@
 import ApiManager from './api';
 import FileManager from './fileManager';
-import { Metadata, Notebook, AnnotationFile, BookProgressResponse } from './models';
+import { Metadata, Notebook, AnnotationFile } from './models';
 import {
 	parseHighlights,
 	parseMetadata,
@@ -99,6 +99,8 @@ export default class SyncNotebooks {
 	}
 
 	private async convertToNotebook(metaData: Metadata): Promise<Notebook> {
+		console.log('sync ：', metaData.title);
+
 		const bookDetail = await this.apiManager.getBook(metaData.bookId);
 		if (bookDetail) {
 			metaData.category = bookDetail.category;
@@ -112,7 +114,7 @@ export default class SyncNotebooks {
 			metaData.payingStatus = bookDetail.payingStatus;
 			metaData.copyright = bookDetail.copyrightInfo ? bookDetail.copyrightInfo.name : '';
 		}
-		const progress: BookProgressResponse = await this.apiManager.getProgress(metaData.bookId);
+		const progress = await this.apiManager.getProgress(metaData.bookId);
 		if (progress && progress.book) {
 			metaData.readInfo = {
 				readingProgress: progress.book.progress,
