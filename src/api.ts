@@ -16,52 +16,172 @@ export default class ApiManager {
 	readonly baseUrl: string = 'https://weread.qq.com';
 
 	private getHeaders() {
-		return {
-			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/73.0.3683.103 Safari/537.36',
-			'Accept-Encoding': 'gzip, deflate, br',
+		let cookieString = getCookieString(get(settingsStore).cookies);
+
+		// 根据平台选择合适的 User-Agent
+		// Mac 版 Obsidian 会截断长的 User-Agent，所以使用短版本
+		// iOS 版 Obsidian 会保留完整 User-Agent，所以也使用短版本保持一致
+		const userAgent =
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)';
+
+		const headers: Record<string, string> = {
+			'User-Agent': userAgent,
+			'Accept-Encoding': 'gzip, deflate',
 			'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 			accept: 'application/json, text/plain, */*',
-			'Content-Type': 'application/json',
-			Cookie: getCookieString(get(settingsStore).cookies)
+			'Content-Type': 'application/json'
 		};
+
+		if (cookieString) {
+			// iOS 端对中文字符有严格限制，需要 URL 编码处理
+			if (!Platform.isDesktopApp) {
+				const cookies = get(settingsStore).cookies;
+				cookieString = cookies
+					.map((cookie) => {
+						return cookie.name + '=' + encodeURIComponent(cookie.value);
+					})
+					.join(';');
+				console.log('[weread plugin] iOS 端使用 URL 编码的 Cookie');
+			}
+
+			headers['Cookie'] = cookieString;
+		}
+
+		return headers;
 	}
 
-	async refreshCookie() {
-		const req: RequestUrlParam = {
-			url: this.baseUrl,
-			method: 'HEAD',
-			headers: this.getHeaders()
-		};
-		const resp = await requestUrl(req);
-		const respCookie: string = resp.headers['set-cookie'] || resp.headers['Set-Cookie'];
+	async refreshCookie(showNotice = false): Promise<boolean> {
+		try {
+			const req: RequestUrlParam = {
+				url: this.baseUrl,
+				method: 'HEAD',
+				headers: this.getHeaders()
+			};
+			const resp = await requestUrl(req);
+			const respCookie: string = resp.headers['set-cookie'] || resp.headers['Set-Cookie'];
 
-		if (respCookie !== undefined && this.checkCookies(respCookie)) {
-			new Notice('cookie已过期，尝试刷新Cookie成功');
-			this.updateCookies(respCookie);
-		} else {
-			const loginMethod = get(settingsStore).loginMethod;
-			if (loginMethod === 'cookieCloud') {
-				const cookieCloudManager = new CookieCloudManager();
-				const isSuccess = await cookieCloudManager.getCookie();
-				if (!isSuccess) {
-					new Notice('尝试刷新Cookie失败');
+			if (respCookie !== undefined && this.checkCookies(respCookie)) {
+				if (showNotice) {
+					new Notice('Cookie 刷新成功');
 				}
-			} else {
-				new Notice('尝试刷新Cookie失败');
+				this.updateCookies(respCookie);
+				settingsStore.actions.setIsCookieValid(true);
+				return true;
+			} else if (respCookie === undefined) {
+				// 没有 set-cookie，说明 Cookie 已是最新
+				if (showNotice) {
+					new Notice('Cookie 已是最新，无须刷新');
+				}
+				settingsStore.actions.setIsCookieValid(true);
+				return true;
+			}
+		} catch (e) {
+			console.error('[weread plugin] Cookie 刷新 HEAD 请求失败', e);
+		}
+
+		const loginMethod = get(settingsStore).loginMethod;
+		if (loginMethod === 'cookieCloud') {
+			const cookieCloudManager = new CookieCloudManager();
+			const isSuccess = await cookieCloudManager.getCookie();
+			if (isSuccess) {
+				// CookieCloud 获取成功后，更新刷新时间
+				settingsStore.actions.updateCookieRefreshTime();
+				return true;
 			}
 		}
+
+		// HEAD did not yield new cookies — verify actual validity via authenticated API
+		const isValid = await this.verifyCookieValidity();
+		if (isValid) {
+			// API 验证成功，提示用户 Cookie 已是最新
+			if (showNotice) {
+				new Notice('Cookie 已是最新，无须刷新');
+			}
+		} else {
+			const errorMsg = Platform.isDesktopApp
+				? 'Cookie 已失效，请重新登录'
+				: 'Cookie 已失效，请在电脑端重新登录';
+			if (showNotice) {
+				new Notice(errorMsg);
+			}
+			if (Platform.isDesktopApp) {
+				settingsStore.actions.clearCookies();
+			} else {
+				settingsStore.actions.markCookiesInvalid();
+			}
+		}
+		return isValid;
+	}
+
+	async verifyCookieValidity(): Promise<boolean> {
+		const cookies = get(settingsStore).cookies;
+		if (!cookies || cookies.length === 0) {
+			console.log('[weread plugin] Cookie 为空，标记无效');
+			settingsStore.actions.setIsCookieValid(false);
+			return false;
+		}
+
+		try {
+			const headers = this.getHeaders();
+			const req: RequestUrlParam = {
+				url: `${this.baseUrl}/api/user/notebook`,
+				method: 'GET',
+				headers: headers
+			};
+
+			const resp = await requestUrl(req);
+			// Absorb any session-cookie refresh the server sends back
+			const respCookie: string = resp.headers['set-cookie'] || resp.headers['Set-Cookie'];
+			if (respCookie) {
+				console.log('[weread plugin] 收到新的 set-cookie 响应头，更新 Cookie');
+				this.updateCookies(respCookie);
+			}
+
+			if (resp.json && resp.json.books !== undefined) {
+				console.log('[weread plugin] Cookie 有效，书籍数:', resp.json.books.length);
+				settingsStore.actions.setIsCookieValid(true);
+				return true;
+			}
+
+			if (resp.json && resp.json.errcode === -2012) {
+				console.log('[weread plugin] Cookie 超时错误 (-2012)');
+				settingsStore.actions.setIsCookieValid(false);
+				return false;
+			}
+		} catch (e: any) {
+			console.error('[weread plugin] 验证异常 - 错误信息:', e.message);
+			if (e.status === 401) {
+				if (Platform.isDesktopApp) {
+					console.log('[weread plugin] 桌面端 401，标记 Cookie 无效');
+					settingsStore.actions.setIsCookieValid(false);
+				} else {
+					settingsStore.actions.markCookiesInvalid();
+				}
+				return false;
+			}
+		}
+
+		// Network error or ambiguous response — preserve current state and log a warning
+		const currentValidity = get(settingsStore).isCookieValid;
+		return currentValidity;
 	}
 
 	async getNotebooksWithRetry() {
 		let noteBookResp: [] = await this.getNotebooks();
-		if (noteBookResp === undefined || noteBookResp.length === 0) {
+		if (noteBookResp === undefined) {
 			//retry get notebooks
 			noteBookResp = await this.getNotebooks();
 		}
-		if (noteBookResp === undefined || noteBookResp.length === 0) {
-			new Notice('长时间未登录，Cookie已失效，请重新扫码登录！');
-			settingsStore.actions.clearCookies();
+		if (noteBookResp === undefined) {
+			const errorMsg = Platform.isDesktopApp
+				? '长时间未登录，Cookie已失效，请重新扫码登录！'
+				: '长时间未登录，Cookie已失效，请在电脑端登录！';
+			new Notice(errorMsg);
+			if (Platform.isDesktopApp) {
+				settingsStore.actions.clearCookies();
+			} else {
+				settingsStore.actions.markCookiesInvalid();
+			}
 			throw Error('get weread note book error after retry');
 		}
 		return noteBookResp;
@@ -92,7 +212,11 @@ export default class ApiManager {
 						'微信读书未登录或者用户异常，请重新登录, http status code:',
 						resp.json.errcode
 					);
-					settingsStore.actions.clearCookies();
+					if (Platform.isDesktopApp) {
+						settingsStore.actions.clearCookies();
+					} else {
+						settingsStore.actions.markCookiesInvalid();
+					}
 				}
 			} else {
 				if (resp.json.errcode == -2012) {
@@ -108,7 +232,7 @@ export default class ApiManager {
 			}
 
 			noteBooks = resp.json.books;
-		} catch (e) {
+		} catch (e: any) {
 			if (e.status == 401) {
 				console.log(`parse request to cURL for debug: ${this.parseToCurl(req)}`);
 				await this.refreshCookie();
@@ -121,7 +245,7 @@ export default class ApiManager {
 	private parseToCurl(req: RequestUrlParam) {
 		const command = ['curl'];
 		command.push(req.url);
-		const requestHeaders = req.headers;
+		const requestHeaders = req.headers || {};
 		Object.keys(requestHeaders).forEach((name) => {
 			command.push('-H');
 			command.push(
@@ -133,14 +257,14 @@ export default class ApiManager {
 	}
 
 	private escapeStringPosix(str: string) {
-		function escapeCharacter(x) {
-			let code = x.charCodeAt(0);
+		function escapeCharacter(x: string) {
+			const code = x.charCodeAt(0);
 			if (code < 256) {
 				// Add leading zero when needed to not care about the next character.
 				return code < 16 ? '\\x0' + code.toString(16) : '\\x' + code.toString(16);
 			}
-			code = code.toString(16);
-			return '\\u' + ('0000' + code).substr(code.length, 4);
+			const codeHex = code.toString(16);
+			return '\\u' + ('0000' + codeHex).substr(codeHex.length, 4);
 		}
 
 		if (/[^\x20-\x7E]|'/.test(str)) {
@@ -161,7 +285,7 @@ export default class ApiManager {
 		}
 	}
 
-	async getBook(bookId: string): Promise<BookDetailResponse> {
+	async getBook(bookId: string): Promise<BookDetailResponse | undefined> {
 		try {
 			const req: RequestUrlParam = {
 				url: `${this.baseUrl}/web/book/info?bookId=${bookId}`,
@@ -180,7 +304,7 @@ export default class ApiManager {
 		}
 	}
 
-	async getNotebookHighlights(bookId: string): Promise<HighlightResponse> {
+	async getNotebookHighlights(bookId: string): Promise<HighlightResponse | undefined> {
 		try {
 			const req: RequestUrlParam = {
 				url: `${this.baseUrl}/web/book/bookmarklist?bookId=${bookId}`,
@@ -194,7 +318,7 @@ export default class ApiManager {
 		}
 	}
 
-	async getNotebookReviews(bookId: string): Promise<BookReviewResponse> {
+	async getNotebookReviews(bookId: string): Promise<BookReviewResponse | undefined> {
 		try {
 			const url = `${this.baseUrl}/web/review/list?bookId=${bookId}&listType=11&mine=1&synckey=0`;
 			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
@@ -208,7 +332,7 @@ export default class ApiManager {
 		}
 	}
 
-	async getChapters(bookId: string): Promise<ChapterResponse> {
+	async getChapters(bookId: string): Promise<ChapterResponse | undefined> {
 		try {
 			const url = `${this.baseUrl}/web/book/chapterInfos`;
 			const reqBody = {
@@ -236,7 +360,7 @@ export default class ApiManager {
 	 * @param bookId 书籍ID
 	 * @returns 书籍阅读进度信息
 	 */
-	async getProgress(bookId: string): Promise<BookProgressResponse> {
+	async getProgress(bookId: string): Promise<BookProgressResponse | undefined> {
 		try {
 			const url = `${this.baseUrl}/web/book/getProgress?bookId=${bookId}`;
 			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };
@@ -251,7 +375,7 @@ export default class ApiManager {
 	/**
 	 * @deprecated 该方法新 API 中已废弃，请使用 getProgress 方法代替
 	 */
-	async getBookReadInfo(bookId: string): Promise<BookReadInfoResponse> {
+	async getBookReadInfo(bookId: string): Promise<BookReadInfoResponse | undefined> {
 		try {
 			const url = `${this.baseUrl}/web/book/readinfo?bookId=${bookId}&readingDetail=1&readingBookIndex=1&finishedDate=1`;
 			const req: RequestUrlParam = { url: url, method: 'GET', headers: this.getHeaders() };

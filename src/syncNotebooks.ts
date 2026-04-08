@@ -14,6 +14,7 @@ import {
 import { settingsStore } from './settings';
 import { get } from 'svelte/store';
 import { Notice } from 'obsidian';
+import { createSyncFilterContext, evaluateMetadataSyncFilter } from './syncFilter';
 export default class SyncNotebooks {
 	private fileManager: FileManager;
 	private apiManager: ApiManager;
@@ -36,13 +37,33 @@ export default class SyncNotebooks {
 			new Notice(`当前笔记元数据缺少，同步失败!`);
 		}
 	}
-	async syncNotebooks(force = false, journalDate: string) {
-		new Notice('微信读书笔记同步开始!');
+
+	async syncBookById(bookId: string) {
+		const metaDataArr: Metadata[] = await this.getALlMetadata();
+		const localFiles: AnnotationFile[] = await this.fileManager.getNotebookFiles();
+		const duplicateBookSet = this.getDuplicateBooks(metaDataArr);
+		const currentBookMeta = metaDataArr.find((metaData) => metaData.bookId === bookId);
+
+		if (!currentBookMeta) {
+			new Notice('未在远程书架中找到该书籍');
+			return;
+		}
+
+		currentBookMeta.file = await this.getLocalNotebookFile(currentBookMeta, localFiles, true);
+		if (duplicateBookSet.has(currentBookMeta.title)) {
+			currentBookMeta.duplicate = true;
+		}
+
+		const notebook = await this.convertToNotebook(currentBookMeta);
+		await this.saveNotebook(notebook);
+		new Notice(`《${currentBookMeta.title}》已同步到本地`);
+	}
+	async syncNotebooks(force = false, journalDate: string): Promise<number> {
 		const syncStartTime = new Date().getTime();
 		const metaDataArr = await this.getALlMetadata();
 		const filterMetaArr = await this.filterNoteMetas(force, metaDataArr);
 		let syncedNotebooks = 0;
-		const progressNotice = new Notice('微信读书笔记同步中, 请稍后！', 300000);
+		const progressNotice = new Notice('微信读书笔记同步中, 请稍后！', 0);
 
 		try {
 			for (const meta of filterMetaArr) {
@@ -69,6 +90,7 @@ export default class SyncNotebooks {
 		new Notice(
 			`微信读书笔记同步完成!, 总共 ${metaDataArr.length} 本书 ， 本次更新 ${filterMetaArr.length} 本书, 耗时${syncTimeInSeconds} 秒`
 		);
+		return syncedNotebooks;
 	}
 
 	public async syncNotesToJounal(journalDate: string) {
@@ -126,28 +148,21 @@ export default class SyncNotebooks {
 	private async filterNoteMetas(force = false, metaDataArr: Metadata[]): Promise<Metadata[]> {
 		const localFiles: AnnotationFile[] = await this.fileManager.getNotebookFiles();
 		const duplicateBookSet = this.getDuplicateBooks(metaDataArr);
+		const settings = get(settingsStore);
+		const filterContext = createSyncFilterContext(settings);
 		const filterMetaArr: Metadata[] = [];
 		for (const metaData of metaDataArr) {
-			// skip 公众号
-			const saveArticle = get(settingsStore).saveArticleToggle;
-			if (!saveArticle && metaData.bookType === 3) {
-				continue;
-			}
-			if (metaData.noteCount < +get(settingsStore).noteCountLimit) {
-				console.info(
-					`[weread plugin] skip book ${metaData.title} note count: ${metaData.noteCount}`
+			const syncFilter = evaluateMetadataSyncFilter(metaData, filterContext);
+			if (!syncFilter.includedByCurrentSettings) {
+				console.debug(
+					`[weread plugin] skip book ${
+						metaData.title
+					}, reasons: ${syncFilter.reasonLabels.join(', ')}`
 				);
 				continue;
 			}
 			const localNotebookFile = await this.getLocalNotebookFile(metaData, localFiles, force);
 			if (localNotebookFile && !localNotebookFile.new) {
-				continue;
-			}
-			const isNoteBlacklisted = get(settingsStore).notesBlacklist.includes(metaData.bookId);
-			if (isNoteBlacklisted) {
-				console.info(
-					`[weread plugin] skip book ${metaData.title},id:${metaData.bookId} for blacklist`
-				);
 				continue;
 			}
 			metaData.file = localNotebookFile;
@@ -160,8 +175,8 @@ export default class SyncNotebooks {
 	}
 
 	private async getALlMetadata() {
-		const noteBookResp: [] = await this.apiManager.getNotebooksWithRetry();
-		const metaDataArr = noteBookResp.map((noteBook) => parseMetadata(noteBook));
+		const notebookResp = await this.apiManager.getNotebooksWithRetry();
+		const metaDataArr = notebookResp.map((noteBook) => parseMetadata(noteBook));
 		return metaDataArr;
 	}
 

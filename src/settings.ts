@@ -1,9 +1,17 @@
 import { Cookie } from 'set-cookie-parser';
 import { writable } from 'svelte/store';
+import { Platform } from 'obsidian';
 import notebookTemolate from './assets/notebookTemplate.njk';
 import WereadPlugin from '../main';
 
-interface WereadPluginSettings {
+export type SyncMode = 'blacklist' | 'whitelist';
+export type ReadingOpenMode = 'TAB' | 'WINDOW';
+
+type LegacyWereadPluginSettings = Partial<WereadPluginSettings> & {
+	manualSyncMode?: boolean;
+};
+
+export interface WereadPluginSettings {
 	loginMethod: string;
 	cookies: Cookie[];
 	noteLocation: string;
@@ -15,6 +23,7 @@ interface WereadPluginSettings {
 	isCookieValid: boolean;
 	user: string;
 	userVid: string;
+	userAvatar: string;
 	template: string;
 	noteCountLimit: number;
 	subFolderType: string;
@@ -23,16 +32,21 @@ interface WereadPluginSettings {
 	removeParensWhitelist: string;
 	dailyNotesToggle: boolean;
 	notesBlacklist: string;
+	notesWhitelist: string;
+	syncMode: SyncMode;
 	showEmptyChapterTitleToggle: boolean;
 	convertTags: boolean;
 	saveArticleToggle: boolean;
 	saveReadingInfoToggle: boolean;
+	readingOpenMode: ReadingOpenMode;
 	trimBlocks: boolean;
 	cookieCloudInfo: {
 		serverUrl: string;
 		uuid: string;
 		password: string;
 	};
+	cookieAutoRefreshToggle: boolean;
+	cookieRefreshInterval: number;
 }
 
 const DEFAULT_SETTINGS: WereadPluginSettings = {
@@ -47,6 +61,7 @@ const DEFAULT_SETTINGS: WereadPluginSettings = {
 	isCookieValid: false,
 	user: '',
 	userVid: '',
+	userAvatar: '',
 	template: notebookTemolate,
 	noteCountLimit: -1,
 	subFolderType: '-1',
@@ -55,16 +70,21 @@ const DEFAULT_SETTINGS: WereadPluginSettings = {
 	removeParensWhitelist: '',
 	dailyNotesToggle: false,
 	notesBlacklist: '',
+	notesWhitelist: '',
+	syncMode: 'blacklist',
 	showEmptyChapterTitleToggle: false,
 	convertTags: false,
 	saveArticleToggle: true,
 	saveReadingInfoToggle: true,
+	readingOpenMode: 'TAB',
 	trimBlocks: false,
 	cookieCloudInfo: {
 		serverUrl: '',
 		uuid: '',
 		password: ''
-	}
+	},
+	cookieAutoRefreshToggle: false,
+	cookieRefreshInterval: 12
 };
 
 const createSettingsStore = () => {
@@ -73,9 +93,43 @@ const createSettingsStore = () => {
 	let _plugin!: WereadPlugin;
 
 	const initialise = async (plugin: WereadPlugin): Promise<void> => {
-		const data = Object.assign({}, DEFAULT_SETTINGS, await plugin.loadData());
-		const settings: WereadPluginSettings = { ...data };
+		const loadedData = await plugin.loadData();
+		const rawData: LegacyWereadPluginSettings =
+			loadedData && typeof loadedData === 'object' && !Array.isArray(loadedData)
+				? loadedData
+				: {};
+		const data = Object.assign({}, DEFAULT_SETTINGS, rawData);
+		const { manualSyncMode, ...restData } = data;
+		const settings: WereadPluginSettings = {
+			...restData,
+			syncMode:
+				data.syncMode === 'blacklist' || data.syncMode === 'whitelist'
+					? data.syncMode
+					: manualSyncMode
+					? 'whitelist'
+					: 'blacklist'
+		};
 		console.log('--------init cookie------', settings.cookies);
+		console.log(
+			'[weread plugin] Cookie 详情: 数量=' +
+				settings.cookies.length +
+				', 用户=' +
+				settings.user +
+				', 登录状态=' +
+				settings.isCookieValid +
+				', 平台=' +
+				(typeof Platform !== 'undefined'
+					? Platform.isDesktopApp
+						? '桌面端'
+						: '移动端'
+					: '未知')
+		);
+		if (settings.cookies.length > 0) {
+			console.log(
+				'[weread plugin] Cookie 详细列表:',
+				settings.cookies.map((c) => c.name).join(', ')
+			);
+		}
 		if (settings.cookies.length > 1) {
 			setUser(settings.cookies);
 		}
@@ -83,10 +137,14 @@ const createSettingsStore = () => {
 		const wr_vid = settings.cookies.find((cookie) => cookie.name === 'wr_vid');
 		if (wr_vid === undefined || wr_vid.value === '') {
 			settings.userVid = '';
-			settings.isCookieValid = false;
+			// 仅在完全没有 Cookie 时才标记为无效
+			if (settings.cookies.length === 0) {
+				settings.isCookieValid = false;
+			}
+			// 否则保留已有状态，由后续验证过程更新
 		}
-		store.set(settings);
 		_plugin = plugin;
+		store.set(settings);
 	};
 
 	store.subscribe(async (settings) => {
@@ -112,7 +170,31 @@ const createSettingsStore = () => {
 			state.lastCookieTime = new Date().getTime();
 			state.user = '';
 			state.userVid = '';
+			state.userAvatar = '';
 			state.isCookieValid = false;
+			return state;
+		});
+	};
+
+	// 仅标记 Cookie 无效，不删除（用于移动端）
+	const markCookiesInvalid = () => {
+		console.log('[weread plugin] cookie标记为无效，保留数据等待重新登录...');
+		store.update((state) => {
+			state.isCookieValid = false;
+			return state;
+		});
+	};
+
+	const setIsCookieValid = (valid: boolean) => {
+		store.update((state) => {
+			state.isCookieValid = valid;
+			return state;
+		});
+	};
+
+	const updateCookieRefreshTime = () => {
+		store.update((state) => {
+			state.lastCookieTime = new Date().getTime();
 			return state;
 		});
 	};
@@ -143,6 +225,17 @@ const createSettingsStore = () => {
 					console.log('[weread plugin] setting user vid=>', cookie.value);
 					store.update((state) => {
 						state.userVid = cookie.value;
+						return state;
+					});
+				}
+			}
+			if (cookie.name == 'wr_avatar') {
+				if (cookie.value !== '') {
+					// Cookie 中的值已经是 URL 编码的，需要解码
+					const avatarUrl = decodeURIComponent(cookie.value);
+					console.log('[weread plugin] setting user avatar=>', avatarUrl);
+					store.update((state) => {
+						state.userAvatar = avatarUrl;
 						return state;
 					});
 				}
@@ -239,6 +332,20 @@ const createSettingsStore = () => {
 		});
 	};
 
+	const setSyncMode = (syncMode: SyncMode) => {
+		store.update((state) => {
+			state.syncMode = syncMode;
+			return state;
+		});
+	};
+
+	const setNotesWhitelist = (notesWhitelist: string) => {
+		store.update((state) => {
+			state.notesWhitelist = notesWhitelist;
+			return state;
+		});
+	};
+
 	const setEmptyChapterTitleToggle = (emtpyChapterTitleToggle: boolean) => {
 		store.update((state) => {
 			state.showEmptyChapterTitleToggle = emtpyChapterTitleToggle;
@@ -267,6 +374,13 @@ const createSettingsStore = () => {
 		});
 	};
 
+	const setReadingOpenMode = (readingOpenMode: ReadingOpenMode) => {
+		store.update((state) => {
+			state.readingOpenMode = readingOpenMode;
+			return state;
+		});
+	};
+
 	const setCookieCloudInfo = (info: { serverUrl: string; uuid: string; password: string }) => {
 		store.update((state) => {
 			state.cookieCloudInfo = info;
@@ -281,6 +395,20 @@ const createSettingsStore = () => {
 		});
 	};
 
+	const setCookieAutoRefreshToggle = (cookieAutoRefreshToggle: boolean) => {
+		store.update((state) => {
+			state.cookieAutoRefreshToggle = cookieAutoRefreshToggle;
+			return state;
+		});
+	};
+
+	const setCookieRefreshInterval = (cookieRefreshInterval: number) => {
+		store.update((state) => {
+			state.cookieRefreshInterval = cookieRefreshInterval;
+			return state;
+		});
+	};
+
 	return {
 		subscribe: store.subscribe,
 		initialise,
@@ -289,6 +417,8 @@ const createSettingsStore = () => {
 			setNoteLocationFolder,
 			setCookies,
 			clearCookies,
+			markCookiesInvalid,
+			updateCookieRefreshTime,
 			setTemplate,
 			setNoteCountLimit,
 			setSubFolderType,
@@ -301,12 +431,18 @@ const createSettingsStore = () => {
 			setInsertAfter,
 			setInsertBefore,
 			setNoteBlacklist,
+			setSyncMode,
+			setNotesWhitelist,
 			setEmptyChapterTitleToggle,
 			setConvertTags,
 			setSaveArticleToggle,
 			setSaveReadingInfoToggle,
+			setReadingOpenMode,
 			setCookieCloudInfo,
-			setTrimBlocks
+			setTrimBlocks,
+			setCookieAutoRefreshToggle,
+			setCookieRefreshInterval,
+			setIsCookieValid
 		}
 	};
 };
