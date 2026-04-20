@@ -3,6 +3,8 @@ import WereadPlugin from '../../main';
 import WereadBookshelfService from '../bookshelf';
 import type { BookshelfBook } from '../models';
 import { WereadBookDetailModal } from './wereadBookDetailModal';
+import { settingsStore } from '../settings';
+import { get } from 'svelte/store';
 
 export const WEREAD_BOOKSHELF_VIEW_ID = 'weread-bookshelf-view';
 
@@ -43,7 +45,7 @@ export class WereadBookshelfView extends ItemView {
 	private syncStatusFilter: SyncStatusFilter = DEFAULT_SYNC_STATUS_FILTER;
 	private readingStatusFilter: ReadingStatusFilter = 'all';
 	private sortMode: BookshelfSort = 'recent';
-	private groupByYear = false;
+	private groupByYear = true;
 	private loading = false;
 	private emptyStateEl: HTMLElement;
 	private summaryEl: HTMLElement;
@@ -145,40 +147,6 @@ export class WereadBookshelfView extends ItemView {
 			this.renderBooks();
 		};
 
-		const sortSelect = toolbarFilters.createEl('select', {
-			cls: 'dropdown',
-			attr: { 'aria-label': '选择书架排序方式' }
-		});
-		[
-			['recent', '时间排序'],
-			['title', '按标题排序']
-		].forEach(([value, label]) => {
-			sortSelect.createEl('option', { value, text: label });
-		});
-		const groupToggleWrapper = toolbarFilters.createEl('label', {
-			cls: 'weread-bookshelf-toggle'
-		});
-		const groupToggle = groupToggleWrapper.createEl('input', {
-			type: 'checkbox',
-			attr: { 'aria-label': '按阅读年份分组' }
-		});
-		groupToggle.checked = true;
-		this.groupByYear = true;
-		groupToggleWrapper.createSpan({ cls: 'toggle-slider' });
-		groupToggleWrapper.createSpan({ text: '按年份分组', cls: 'toggle-text' });
-		groupToggle.onchange = () => {
-			this.groupByYear = groupToggle.checked;
-			this.renderBooks();
-		};
-		sortSelect.onchange = () => {
-			this.sortMode = sortSelect.value as BookshelfSort;
-			groupToggle.disabled = this.sortMode !== 'recent';
-			groupToggleWrapper.toggleClass('is-disabled', groupToggle.disabled);
-			this.renderBooks();
-		};
-		groupToggle.disabled = this.sortMode !== 'recent';
-		groupToggleWrapper.toggleClass('is-disabled', groupToggle.disabled);
-
 		const toolbarActions = toolbar.createDiv({ cls: 'weread-bookshelf-toolbar-actions' });
 		const syncButton = toolbarActions.createEl('button', {
 			cls: 'mod-cta weread-toolbar-button'
@@ -249,6 +217,9 @@ export class WereadBookshelfView extends ItemView {
 		this.gridEl.empty();
 		try {
 			this.shelfBooks = await this.bookshelfService.getBookshelfBooks();
+			const settings = get(settingsStore);
+			this.sortMode = settings.bookshelfSortMode;
+			this.groupByYear = settings.bookshelfGroupByYear;
 			this.renderBooks();
 		} catch (error: unknown) {
 			this.summaryEl.setText('加载书架失败');
@@ -262,14 +233,25 @@ export class WereadBookshelfView extends ItemView {
 		const filteredBooks = this.getFilteredBooks();
 		this.gridEl.empty();
 		this.emptyStateEl.empty();
+
+		const settings = get(settingsStore);
+		let summaryText: string;
 		if (this.shouldGroupByYear()) {
 			const groupedBooks = this.groupBooksByYear(filteredBooks);
-			this.summaryEl.setText(
-				`展示 ${filteredBooks.length} 本书 · ${groupedBooks.length} 个年份分组`
-			);
+			summaryText = `展示 ${filteredBooks.length} 本书 · ${groupedBooks.length} 个年份分组`;
 		} else {
-			this.summaryEl.setText(`展示 ${filteredBooks.length} 本书`);
+			summaryText = `展示 ${filteredBooks.length} 本书`;
 		}
+
+		// 添加上次同步状态
+		if (settings.lastSyncTime > 0) {
+			const lastSyncStr = new Date(settings.lastSyncTime).toLocaleString();
+			summaryText += ` | 上次同步：${lastSyncStr}，更新 ${settings.lastSyncBookCount} 本书`;
+		} else {
+			summaryText += ' | 尚未执行过同步';
+		}
+
+		this.summaryEl.setText(summaryText);
 
 		if (filteredBooks.length === 0) {
 			this.emptyStateEl.setText(this.loading ? '加载中...' : '没有找到匹配的书籍');
